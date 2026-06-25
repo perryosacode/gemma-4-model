@@ -1,0 +1,27 @@
+# Model weight files (too large for GitHub)
+gemma-4-hf/
+gemma-4-26B-A4B-it/
+
+# Upstream mlc-llm repo (separate project, too large)
+mlc-llm/
+
+# Claude Code local settings
+.claude/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+
+# Compiled artifacts
+*.so
+*.a
+*.o
+
+# Jupyter
+.ipynb_checkpoints/
