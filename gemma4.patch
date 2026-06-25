@@ -1,0 +1,106 @@
+diff --git a/python/mlc_llm/conversation_template/gemma.py b/python/mlc_llm/conversation_template/gemma.py
+index 7ac4fb7c..25e64b22 100644
+--- a/python/mlc_llm/conversation_template/gemma.py
++++ b/python/mlc_llm/conversation_template/gemma.py
+@@ -35,3 +35,27 @@ ConvTemplateRegistry.register_conv_template(
+         system_prefix_token_ids=[2],
+     )
+ )
++
++# Gemma 4 Instruction.
++# Gemma 4 uses a DIFFERENT chat format from Gemma 1/2/3: turns are delimited by the
++# single tokens <|turn> (105) and <turn|> (106) — NOT <start_of_turn>/<end_of_turn>
++# (which are not special tokens in the Gemma 4 tokenizer). With thinking disabled
++# (the default), the model generation prompt emits an empty thought channel
++# "<|channel>thought\n<channel|>" before the answer. The assembled generation prompt is:
++#   <bos><|turn>user\n{msg}<turn|>\n<|turn>model\n<|channel>thought\n<channel|>
++# (verified token-for-token against the checkpoint's apply_chat_template).
++# eos = [1 <eos>, 106 <turn|>, 50 <|tool_response>] per generation_config.json.
++ConvTemplateRegistry.register_conv_template(
++    Conversation(
++        name="gemma4_instruction",
++        system_template=f"{MessagePlaceholders.SYSTEM.value}",
++        system_message="",
++        roles={"user": "<|turn>user", "assistant": "<|turn>model"},
++        seps=["<turn|>\n"],
++        role_content_sep="\n",
++        role_empty_sep="\n<|channel>thought\n<channel|>",
++        stop_str=["<turn|>"],
++        stop_token_ids=[1, 106, 50],
++        system_prefix_token_ids=[2],
++    )
++)
+diff --git a/python/mlc_llm/interface/gen_config.py b/python/mlc_llm/interface/gen_config.py
+index 3be01935..6a9b2116 100644
+--- a/python/mlc_llm/interface/gen_config.py
++++ b/python/mlc_llm/interface/gen_config.py
+@@ -338,6 +338,7 @@ CONV_TEMPLATES = {
+     "stablelm-2",
+     "gemma_instruction",
+     "gemma3_instruction",
++    "gemma4_instruction",
+     "orion",
+     "llava",
+     "hermes2_pro_llama3",
+diff --git a/python/mlc_llm/model/model.py b/python/mlc_llm/model/model.py
+index 1800bc1e..e36195ec 100644
+--- a/python/mlc_llm/model/model.py
++++ b/python/mlc_llm/model/model.py
+@@ -19,6 +19,7 @@ from .eagle import eagle_loader, eagle_model
+ from .gemma import gemma_loader, gemma_model
+ from .gemma2 import gemma2_loader, gemma2_model
+ from .gemma3 import gemma3_loader, gemma3_model
++from .gemma4 import gemma4_loader, gemma4_model
+ from .gpt2 import gpt2_loader, gpt2_model
+ from .gpt_bigcode import gpt_bigcode_loader, gpt_bigcode_model
+ from .gpt_j import gpt_j_loader, gpt_j_model
+@@ -238,6 +239,32 @@ MODELS: Dict[str, Model] = {  # noqa: UP006
+             supports_ft_quant=False,
+         ),
+     ),
++    "gemma4": Model(
++        name="gemma4",
++        model=gemma4_model.Gemma4ForCausalLM,
++        config=gemma4_model.Gemma4Config,
++        source={
++            "huggingface-torch": gemma4_loader.huggingface,
++            "huggingface-safetensor": gemma4_loader.huggingface,
++        },
++        quantize=make_quantization_functions(
++            gemma4_model.Gemma4ForCausalLM,
++            supports_ft_quant=False,
++        ),
++    ),
++    "gemma4_text": Model(
++        name="gemma4_text",
++        model=gemma4_model.Gemma4ForCausalLM,
++        config=gemma4_model.Gemma4Config,
++        source={
++            "huggingface-torch": gemma4_loader.huggingface,
++            "huggingface-safetensor": gemma4_loader.huggingface,
++        },
++        quantize=make_quantization_functions(
++            gemma4_model.Gemma4ForCausalLM,
++            supports_ft_quant=False,
++        ),
++    ),
+     "gpt2": Model(
+         name="gpt2",
+         model=gpt2_model.GPT2LMHeadModel,
+diff --git a/python/mlc_llm/quantization/group_quantization.py b/python/mlc_llm/quantization/group_quantization.py
+index 19e55a8c..1356d9d7 100644
+--- a/python/mlc_llm/quantization/group_quantization.py
++++ b/python/mlc_llm/quantization/group_quantization.py
+@@ -581,8 +581,10 @@ class GroupQuantizeMixtralExperts(nn.Module):
+         self.quantize_dtype = config.quantize_dtype
+         self.group_size = config.group_size
+         self.dtype = config.model_dtype
+-        if config.linear_weight_layout == "KN":
+-            raise NotImplementedError("GroupQuantizeMixtralExperts does not support KN layout now.")
++        # NOTE: MixtralExperts weights are always group-quantized along ``in_features``
++        # (axis=-1, no output transpose) and run through the NK MoE matmul kernels,
++        # independent of ``linear_weight_layout``. So a KN config (e.g. q4f16_0) simply
++        # means "KN dense linears + NK experts", which is well defined and correct.
+ 
+     @staticmethod
+     def from_mixtral_experts(
